@@ -1,0 +1,17 @@
+# Sensitive
+.env
+
+# Cache and generated data (use Docker volumes for persistence)
+data_cache/
+trades/
+backtest_results/
+charts/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dev
+.git/
+.gitignore
+*.log

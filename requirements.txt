@@ -16,3 +16,7 @@ python-dotenv>=1.0
 
 # Notifications
 python-telegram-bot>=20.0
+
+# Dashboard
+flask>=3.0
+gunicorn>=21.0
