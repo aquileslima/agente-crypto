@@ -6,9 +6,6 @@ matplotlib>=3.7.0
 # Exchange API
 ccxt>=4.0
 
-# Machine Learning & Indicators
-pandas-ta>=0.3.14
-
 # API & Environment
 anthropic>=0.25
 requests>=2.31
