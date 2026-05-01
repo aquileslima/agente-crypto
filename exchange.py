@@ -22,21 +22,26 @@ def _build_exchange(public_only: bool = False) -> ccxt.binance:
         "enableRateLimit": True,
     }
 
-    # Testnet configuration
-    if _TESTNET:
-        kwargs["urls"] = {
-            "api": {
-                "fapiPublic": "https://testnet.binancefuture.com/fapi/v1",
-                "fapiPrivate": "https://testnet.binancefuture.com/fapi/v1",
-            }
-        }
-        logger.debug("Using Binance Testnet")
-
     if not public_only:
         kwargs["apiKey"] = os.getenv("BINANCE_API_KEY", "")
         kwargs["secret"] = os.getenv("BINANCE_API_SECRET", "")
 
-    return ccxt.binance(kwargs)
+    exchange = ccxt.binance(kwargs)
+
+    # Override URLs AFTER instantiation — passing via kwargs doesn't
+    # reliably override all internal URL keys in CCXT.
+    # The base must be just the host (CCXT appends /fapi/v1/... itself).
+    if _TESTNET:
+        base = "https://testnet.binancefuture.com"
+        exchange.urls["api"]["fapiPublic"]   = base
+        exchange.urls["api"]["fapiPublicV2"] = base
+        exchange.urls["api"]["fapiPublicV3"] = base
+        exchange.urls["api"]["fapiPublicV4"] = base
+        exchange.urls["api"]["fapiPrivate"]  = base
+        exchange.urls["api"]["fapiPrivateV2"] = base
+        logger.info("Using Binance Futures Testnet: %s", base)
+
+    return exchange
 
 
 def get_current_price(symbol: str = "ETH/USDT") -> float:
