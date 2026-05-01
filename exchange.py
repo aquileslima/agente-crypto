@@ -1,17 +1,18 @@
 """
 Exchange — Binance Futures connector.
 In paper mode (default): only price fetching is used; no real orders are placed.
-In live mode: places market orders, sets leverage, manages positions.
+In live mode (testnet or real): places market orders, sets leverage, manages positions.
 """
 import os
 import logging
 import ccxt
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 logger = logging.getLogger(__name__)
 
 _MODE = os.getenv("TRADING_MODE", "paper").lower()
+_TESTNET = os.getenv("BINANCE_TESTNET", "false").lower() == "true"
 _LEVERAGE = int(os.getenv("LEVERAGE", "3"))
 
 
@@ -20,9 +21,21 @@ def _build_exchange(public_only: bool = False) -> ccxt.binance:
         "options": {"defaultType": "future"},
         "enableRateLimit": True,
     }
+
+    # Testnet configuration
+    if _TESTNET:
+        kwargs["urls"] = {
+            "api": {
+                "fapiPublic": "https://testnet.binancefuture.com/fapi/v1",
+                "fapiPrivate": "https://testnet.binancefuture.com/fapi/v1",
+            }
+        }
+        logger.debug("Using Binance Testnet")
+
     if not public_only:
         kwargs["apiKey"] = os.getenv("BINANCE_API_KEY", "")
         kwargs["secret"] = os.getenv("BINANCE_API_SECRET", "")
+
     return ccxt.binance(kwargs)
 
 
@@ -94,3 +107,22 @@ def get_open_positions(symbol: str = "ETH/USDT") -> list:
     ex = _build_exchange()
     positions = ex.fetch_positions([symbol])
     return [p for p in positions if float(p.get("contracts", 0)) != 0]
+
+
+def get_websocket_url(symbol: str = "ETH/USDT") -> str:
+    """Get WebSocket stream URL for real-time price updates."""
+    ws_symbol = symbol.replace("/", "").lower()
+    if _TESTNET:
+        return f"wss://stream.testnet.binancefuture.com/ws/{ws_symbol}@bookTicker"
+    else:
+        return f"wss://fstream.binance.com/ws/{ws_symbol}@bookTicker"
+
+
+def is_live_mode() -> bool:
+    """Check if running in live mode (testnet or real)."""
+    return _MODE in ("live", "testnet") or _TESTNET
+
+
+def is_testnet() -> bool:
+    """Check if running in testnet mode."""
+    return _TESTNET

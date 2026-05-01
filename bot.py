@@ -1,12 +1,14 @@
 """
 Bot — main live/paper trading loop.
 Runs every hour (aligned to candle close), calls all agents, executes signals.
+In live mode: uses WebSocket real-time monitoring for SL/TP.
 
 Usage:
   python bot.py          # runs continuously
   python bot.py --once   # single analysis cycle (for testing)
 """
 import argparse
+import asyncio
 import logging
 import os
 import sys
@@ -27,7 +29,7 @@ from config import SYMBOL, STARTING_CAPITAL
 from market_state import get_current_market_state
 from orchestrator import run_analysis
 from paper_trader import PaperTrader
-from exchange import get_current_price
+from exchange import get_current_price, is_live_mode, is_testnet
 from telegram_notifier import (
     send_signal, send_trade_opened, send_trade_closed,
     send_position_update, send_error, send_startup,
@@ -35,6 +37,13 @@ from telegram_notifier import (
 from agents.reflect_agent import save_trade
 
 MODE = os.getenv("TRADING_MODE", "paper").lower()
+
+# Import RealTrader only if needed (live mode)
+if is_live_mode():
+    from real_trader import RealTrader
+    logger.info(f"Live mode detected. Using RealTrader (Testnet={is_testnet()})")
+else:
+    RealTrader = None
 
 
 # ── Timing ────────────────────────────────────────────────────────────────────
@@ -56,7 +65,7 @@ def _wait_until_next_candle() -> None:
 
 # ── Single iteration ──────────────────────────────────────────────────────────
 
-def run_once(trader: PaperTrader) -> None:
+def run_once(trader) -> None:  # Can be PaperTrader or RealTrader
     """Execute one full analysis + trade management cycle."""
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     logger.info(f"── Cycle start {now_str} ──")
@@ -135,12 +144,21 @@ def run_once(trader: PaperTrader) -> None:
 def main(run_once_only: bool = False) -> None:
     logger.info("=" * 60)
     logger.info(f"AGENTE CRYPTO — ETH/USDT | Mode: {MODE.upper()}")
+    if is_live_mode():
+        logger.info(f"Live Trading: Testnet={is_testnet()}")
     logger.info("=" * 60)
 
-    trader = PaperTrader()
+    # Create appropriate trader based on mode
+    if is_live_mode() and RealTrader:
+        trader = RealTrader()
+        mode_display = "LIVE (Testnet)" if is_testnet() else "LIVE (Real)"
+    else:
+        trader = PaperTrader()
+        mode_display = "PAPER"
+
     summary = trader.get_summary()
 
-    send_startup(MODE, summary["capital"])
+    send_startup(mode_display, summary["capital"])
     logger.info(
         f"Starting capital: ${summary['capital']:,.2f} | "
         f"Trades so far: {summary['total_trades']}"
