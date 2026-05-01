@@ -1,0 +1,15 @@
+# WebSocket Implementation Dependencies
+# Install: pip install -r requirements-websocket.txt
+
+# Core WebSocket & async
+websockets>=10.0
+asyncio-contextmanager>=1.0.0
+
+# HTTP requests for REST API
+requests>=2.28.0
+
+# Environment variables
+python-dotenv>=0.20.0
+
+# Type hints (optional, for development)
+types-websockets>=10.0

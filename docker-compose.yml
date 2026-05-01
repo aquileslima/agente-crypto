@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  crypto-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: agente-crypto-bot
+
+    restart: unless-stopped
+
+    environment:
+      # Binance API
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
+      - BINANCE_TESTNET=${BINANCE_TESTNET:-false}
+
+      # Trading
+      - TRADING_MODE=${TRADING_MODE:-paper}
+      - LEVERAGE=${LEVERAGE:-3}
+
+      # Anthropic LLM
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+
+      # Telegram
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+    volumes:
+      # Persistent data
+      - ./trades:/app/trades
+      - ./data_cache:/app/data_cache
+      - ./backtest_results:/app/backtest_results
+      - ./charts:/app/charts
+      - ./logs:/app/logs
+
+    ports:
+      - "5000:5000"  # Dashboard
+
+    networks:
+      - crypto-network
+
+    # For Coolify - health checks
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  crypto-network:
+    driver: bridge

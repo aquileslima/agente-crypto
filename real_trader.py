@@ -11,8 +11,8 @@ from datetime import datetime, timezone
 
 from config import STARTING_CAPITAL, LEVERAGE, RISK_PER_TRADE, STOP_LOSS_BUFFER, \
     TP1_RATIO, TP1_SIZE, MIN_STOP_DISTANCE_PCT, USE_TRAILING_STOP, SYMBOL
-from exchange import _build_exchange, get_websocket_url, is_testnet
-from websocket_monitor import WebSocketMonitor
+from exchange import _build_exchange
+from websocket_direct import BinanceWebSocketClient
 
 logger = logging.getLogger(__name__)
 
@@ -166,28 +166,99 @@ class RealTrader:
 
     async def monitor_exits_async(self, ema_fast: float) -> dict | None:
         """
-        Monitor position exits in real-time via WebSocket.
+        Monitor position exits in real-time via WebSocket (pure implementation).
+        Connects directly to Binance bookTicker stream and monitors for SL/TP/trailing stop.
         Returns closed trade dict if position was closed, else None.
         """
         if not self.has_position():
             return None
 
         pos = self.state["position"]
-        ws_url = get_websocket_url(SYMBOL)
-        monitor = WebSocketMonitor(ws_url, pos, ema_fast)
+        symbol = SYMBOL.replace("/", "").lower()  # ETHUSDT
 
-        def on_exit(exit_info: dict):
-            """Callback when exit condition is met."""
-            asyncio.create_task(self._execute_exit(exit_info))
+        # WebSocket client for real-time price updates
+        ws_client = BinanceWebSocketClient(symbol, stream_type="bookTicker")
 
-        monitor.set_exit_callback(on_exit)
+        exit_detected = {"trade": None}
+
+        async def on_price_update(data: dict) -> None:
+            """Process real-time price updates and check for exit conditions."""
+            if exit_detected["trade"] is not None:
+                # Already exited, stop monitoring
+                ws_client.stop()
+                return
+
+            if data.get("type") == "price_update":
+                current_price = data.get("mid", 0)
+
+                # Check exit conditions
+                exit_info = self._check_exit_condition(current_price, ema_fast)
+                if exit_info:
+                    logger.warning(f"Exit condition detected: {exit_info['reason']} @ ${current_price:.2f}")
+
+                    # Execute exit order
+                    trade = await self._execute_exit(exit_info)
+                    if trade:
+                        exit_detected["trade"] = trade
+                        ws_client.stop()
+
+        ws_client.set_callback(on_price_update)
 
         try:
-            await monitor.monitor()
+            await asyncio.wait_for(ws_client.connect(), timeout=None)
+        except asyncio.CancelledError:
+            logger.debug("WebSocket monitor cancelled")
         except Exception as e:
             logger.error(f"WebSocket monitor error: {e}")
         finally:
-            monitor.stop()
+            ws_client.stop()
+
+        return exit_detected["trade"]
+
+    def _check_exit_condition(self, current_price: float, ema_fast: float) -> dict | None:
+        """Check if current price triggers any exit condition."""
+        pos = self.state["position"]
+        if not pos:
+            return None
+
+        direction = pos["direction"]
+        entry_price = pos["entry_price"]
+
+        # Stop Loss check
+        stop_price = pos.get("stop_price")
+        if stop_price:
+            if (direction == "LONG" and current_price <= stop_price) or \
+               (direction == "SHORT" and current_price >= stop_price):
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                return {
+                    "reason": "STOP LOSS",
+                    "price": current_price,
+                    "pnl_pct": pnl_pct,
+                }
+
+        # TP1 partial close check
+        if not pos.get("tp1_hit"):
+            tp1_price = pos.get("tp1_price")
+            if tp1_price:
+                if (direction == "LONG" and current_price >= tp1_price) or \
+                   (direction == "SHORT" and current_price <= tp1_price):
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                    return {
+                        "reason": "TP1",
+                        "price": current_price,
+                        "pnl_pct": pnl_pct,
+                    }
+
+        # Trailing stop check (on EMA fast)
+        if ema_fast > 0:
+            if (direction == "LONG" and current_price <= ema_fast) or \
+               (direction == "SHORT" and current_price >= ema_fast):
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                return {
+                    "reason": "TRAILING STOP",
+                    "price": current_price,
+                    "pnl_pct": pnl_pct,
+                }
 
         return None
 
