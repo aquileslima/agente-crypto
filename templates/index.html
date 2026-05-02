@@ -491,6 +491,34 @@
     </div>
   </div>
 
+  <!-- Histórico de Análises sem entrada -->
+  <div class="card" style="margin-bottom:20px;">
+    <div class="card-header">
+      <div class="card-title">Histórico de Análises — Sem Entrada</div>
+      <button class="refresh-btn" onclick="loadAnalyses()" title="Atualizar">↻</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Hora</th>
+            <th>Preço ETH</th>
+            <th>RSI</th>
+            <th>Trend 4H</th>
+            <th>Decisão</th>
+            <th>Conf.</th>
+            <th>Quant</th>
+            <th>Sent.</th>
+            <th>Motivo</th>
+          </tr>
+        </thead>
+        <tbody id="analyses-body">
+          <tr><td colspan="9" class="empty-state">Carregando...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Logs -->
   <div class="card">
     <div class="card-header">
@@ -707,6 +735,50 @@ async function loadTrades() {
   } catch(e) { console.error('Trades error:', e); }
 }
 
+// ── Analyses (no-entry history) ───────────────────────────────────────────────
+async function loadAnalyses() {
+  try {
+    const r = await fetch('/api/analyses');
+    const items = await r.json();
+    const tbody = document.getElementById('analyses-body');
+
+    if (!items || !items.length) {
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">Nenhuma análise sem entrada registrada ainda.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = items.map(a => {
+      const ms  = a.market_state  || {};
+      const qr  = a.quant_result  || {};
+      const sr  = a.sentiment_result || {};
+      const dec = a.decision || 'NEUTRAL';
+      const decColor = dec === 'LONG' ? 'var(--success)' : dec === 'SHORT' ? 'var(--danger)' : 'var(--muted)';
+      const trendBull = ms.trend_4h_bullish;
+      const trendTxt  = trendBull ? '▲ BULL' : '▼ BEAR';
+      const trendColor = trendBull ? 'var(--success)' : 'var(--danger)';
+      const rsi   = ms.rsi != null ? Number(ms.rsi).toFixed(1) : '—';
+      const price = ms.price != null ? '$' + Number(ms.price).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+      const conf  = a.confidence != null ? a.confidence + '%' : '—';
+      const quant = qr.signal ? `${qr.signal} (${qr.confidence || 0}%)` : '—';
+      const sent  = sr.score != null ? `${sr.score} — ${sr.label || ''}` : '—';
+      const just  = (a.justification || '').length > 80
+        ? a.justification.substring(0, 80) + '…'
+        : (a.justification || '—');
+      return `<tr>
+        <td>${fmtDate(a.timestamp)}</td>
+        <td>${price}</td>
+        <td>${rsi}</td>
+        <td style="color:${trendColor};font-weight:600">${trendTxt}</td>
+        <td style="color:${decColor};font-weight:600">${dec}</td>
+        <td>${conf}</td>
+        <td>${quant}</td>
+        <td style="font-size:11px;">${sent}</td>
+        <td style="color:var(--muted);font-size:11px;">${escHtml(just)}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) { console.error('Analyses error:', e); }
+}
+
 // ── Equity chart ─────────────────────────────────────────────────────────────
 async function loadEquity() {
   try {
@@ -830,7 +902,7 @@ async function botRunOnce() {
 
 // ── Refresh all ───────────────────────────────────────────────────────────────
 async function refreshAll() {
-  await Promise.all([loadStatus(), loadSignal(), loadTrades(), loadEquity(), loadLogs()]);
+  await Promise.all([loadStatus(), loadSignal(), loadTrades(), loadEquity(), loadLogs(), loadAnalyses()]);
 }
 
 // ── Init & polling ────────────────────────────────────────────────────────────

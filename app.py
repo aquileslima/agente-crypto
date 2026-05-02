@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import logging
+import threading
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -40,6 +41,7 @@ def _require_auth(f):
 # ── Bot process tracking ──────────────────────────────────────────────────────
 _bot_process: subprocess.Popen | None = None
 _BOT_PID_FILE = "trades/bot.pid"
+_bot_was_started = False  # True após qualquer start (manual ou automático via watchdog)
 
 def _save_pid(pid: int) -> None:
     os.makedirs("trades", exist_ok=True)
@@ -57,6 +59,52 @@ def _pid_alive(pid: int) -> bool:
         return True
     except (OSError, ProcessLookupError):
         return False
+
+
+def _start_bot_process():
+    """Inicia o subprocess bot.py e registra o PID."""
+    global _bot_process, _bot_was_started
+    os.makedirs("trades", exist_ok=True)
+    log_file = open("trades/bot.log", "a", encoding="utf-8")
+    _bot_process = subprocess.Popen(
+        [sys.executable, "bot.py"],
+        stdout=log_file,
+        stderr=log_file,
+    )
+    _save_pid(_bot_process.pid)
+    _bot_was_started = True
+    app.logger.info(f"Bot process started (PID {_bot_process.pid})")
+    return _bot_process
+
+
+def _bot_watchdog():
+    """
+    Thread de vigilância: auto-reinicia o bot se morrer.
+    Na reinicialização do container, detecta o PID file do volume e relança.
+    """
+    import time
+    time.sleep(15)  # Aguarda Flask iniciar completamente
+
+    # Container pode ter reiniciado com bot.pid no volume montado mas processo morto
+    if os.path.exists(_BOT_PID_FILE) and not _is_bot_running():
+        try:
+            app.logger.info("Watchdog: bot detectado parado na inicialização — relançando...")
+            _start_bot_process()
+        except Exception as e:
+            app.logger.error(f"Watchdog auto-start falhou: {e}")
+
+    while True:
+        time.sleep(60)  # Verifica a cada 60 segundos
+        try:
+            if _bot_was_started and not _is_bot_running():
+                app.logger.warning("Watchdog: bot morreu inesperadamente — reiniciando...")
+                _start_bot_process()
+        except Exception as e:
+            app.logger.error(f"Watchdog restart falhou: {e}")
+
+
+# Inicia watchdog em background (daemon=True → morre junto com Flask)
+threading.Thread(target=_bot_watchdog, daemon=True, name="bot-watchdog").start()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -280,20 +328,12 @@ def api_config():
 @app.route("/api/bot/start", methods=["POST"])
 @_require_auth
 def api_bot_start():
-    global _bot_process
     if _is_bot_running():
         return jsonify({"ok": False, "message": "Bot já está rodando."})
     try:
-        os.makedirs("trades", exist_ok=True)
-        log_file = open("trades/bot.log", "a", encoding="utf-8")
-        _bot_process = subprocess.Popen(
-            [sys.executable, "bot.py"],
-            stdout=log_file,
-            stderr=log_file,
-        )
-        _save_pid(_bot_process.pid)
-        return jsonify({"ok": True, "pid": _bot_process.pid,
-                        "message": f"Bot iniciado (PID {_bot_process.pid})"})
+        proc = _start_bot_process()
+        return jsonify({"ok": True, "pid": proc.pid,
+                        "message": f"Bot iniciado (PID {proc.pid})"})
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)}), 500
 
@@ -301,13 +341,14 @@ def api_bot_start():
 @app.route("/api/bot/stop", methods=["POST"])
 @_require_auth
 def api_bot_stop():
-    global _bot_process
+    global _bot_process, _bot_was_started
     if not _is_bot_running():
         return jsonify({"ok": False, "message": "Bot não está rodando."})
     try:
         _bot_process.terminate()
         _bot_process.wait(timeout=5)
         _bot_process = None
+        _bot_was_started = False  # Watchdog NÃO reinicia após stop manual
         _clear_pid()
         return jsonify({"ok": True, "message": "Bot parado com sucesso."})
     except Exception as e:
@@ -327,6 +368,15 @@ def api_bot_run_once():
         return jsonify({"ok": False, "message": "Timeout após 3 minutos."}), 500
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/analyses")
+@_require_auth
+def api_analyses():
+    """Retorna os últimos 30 ciclos onde não houve entrada (entry_allowed=false)."""
+    signals = _read_json("trades/signals_log.json") or []
+    no_entry = [s for s in signals if not s.get("entry_allowed", False)]
+    return jsonify(list(reversed(no_entry[-30:])))  # mais recentes primeiro
 
 
 @app.route("/api/logs")
