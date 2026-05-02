@@ -20,6 +20,7 @@ def _build_exchange(public_only: bool = False) -> ccxt.binance:
     kwargs = {
         "options": {"defaultType": "future"},
         "enableRateLimit": True,
+        "timeout": 30000,  # 30s — evita travamento indefinido em rede lenta
     }
 
     if not public_only:

@@ -27,7 +27,7 @@ def fetch_ohlcv_data(symbol, timeframe, years=2, use_cache=True, max_cache_hours
             return pd.read_pickle(cache_file)
 
     logger.info(f"Fetching {symbol} {timeframe} for {years} years from Binance...")
-    exchange = ccxt.binance()
+    exchange = ccxt.binance({"timeout": 30000})  # 30s — evita travamento em rede lenta
     all_data = []
 
     end_date = datetime.now(timezone.utc)

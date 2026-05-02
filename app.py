@@ -79,16 +79,24 @@ def _start_bot_process():
 
 def _bot_watchdog():
     """
-    Thread de vigilância: auto-reinicia o bot se morrer.
-    Na reinicialização do container, detecta o PID file do volume e relança.
+    Thread de vigilância: auto-inicia e reinicia o bot se morrer.
+
+    Lógica de auto-start:
+    - Se TRADING_MODE estiver definido (ambiente de produção/Coolify),
+      o bot é iniciado SEMPRE ao subir o container, sem depender de
+      arquivos no volume (que podem não persistir entre deploys).
+    - Após iniciado, verifica a cada 60s e reinicia em caso de crash.
+    - Stop manual via dashboard seta _bot_was_started=False, impedindo
+      restart automático até o próximo deploy do container.
     """
     import time
-    time.sleep(15)  # Aguarda Flask iniciar completamente
+    time.sleep(10)  # Aguarda Flask iniciar completamente
 
-    # Container pode ter reiniciado com bot.pid no volume montado mas processo morto
-    if os.path.exists(_BOT_PID_FILE) and not _is_bot_running():
+    # Auto-start em produção: TRADING_MODE definido = estamos no Coolify/VPS
+    if os.getenv("TRADING_MODE") and not _is_bot_running():
         try:
-            app.logger.info("Watchdog: bot detectado parado na inicialização — relançando...")
+            mode = os.getenv("TRADING_MODE", "").upper()
+            app.logger.info(f"Watchdog: auto-iniciando bot (TRADING_MODE={mode})...")
             _start_bot_process()
         except Exception as e:
             app.logger.error(f"Watchdog auto-start falhou: {e}")
@@ -373,10 +381,10 @@ def api_bot_run_once():
 @app.route("/api/analyses")
 @_require_auth
 def api_analyses():
-    """Retorna os últimos 30 ciclos onde não houve entrada (entry_allowed=false)."""
+    """Retorna os últimos 20 ciclos onde não houve entrada (entry_allowed=false)."""
     signals = _read_json("trades/signals_log.json") or []
     no_entry = [s for s in signals if not s.get("entry_allowed", False)]
-    return jsonify(list(reversed(no_entry[-30:])))  # mais recentes primeiro
+    return jsonify(list(reversed(no_entry[-20:])))  # últimas 20, mais recentes primeiro
 
 
 @app.route("/api/logs")
