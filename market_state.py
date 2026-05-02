@@ -19,14 +19,14 @@ def get_current_market_state(
     timeframe_1h: str = TIMEFRAME_ENTRY,
     timeframe_4h: str = TIMEFRAME_TREND,
     params: dict = None,
-    max_cache_hours: float = 24,
+    max_cache_hours: float = 0.1,  # Padrão: 6 min — garante dados frescos no bot horário
 ) -> dict:
     """
     Fetch the latest OHLCV data and compute current indicator values.
 
     Args:
         max_cache_hours: max age of cached data before re-fetching.
-                         Use 0.5 in live bot mode to always get fresh data.
+                         Default 0.1 (6 min) to always get fresh data on hourly bot runs.
 
     Returns a dict compatible with quant_agent.analyze() and orchestrator.
     """

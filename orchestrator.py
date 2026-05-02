@@ -74,7 +74,7 @@ def run_analysis(verbose: bool = True) -> dict:
 
     # ── Step 2: Current market state ─────────────────────────────────────────
     logger.info("[2/5] Market State...")
-    market_state = get_current_market_state()
+    market_state = get_current_market_state(max_cache_hours=0.1)  # Sempre dados frescos (máx 6 min cache)
     if verbose:
         logger.info(
             f"  Price: ${market_state['price']:,.2f} | "
