@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import logging
 import threading
 from datetime import datetime, timezone
@@ -92,11 +93,20 @@ def _bot_watchdog():
     import time
     time.sleep(10)  # Aguarda Flask iniciar completamente
 
-    # Auto-start em produção: TRADING_MODE definido = estamos no Coolify/VPS
-    if os.getenv("TRADING_MODE") and not _is_bot_running():
+    # Auto-start em produção:
+    # Condição 1: TRADING_MODE definido no ambiente (Coolify/VPS)
+    # Condição 2: PID file existe no volume (bot estava rodando antes do restart)
+    # Ambas indicam que o bot deve rodar; só NÃO iniciamos em dev local sem essas condições
+    mode_set = bool(os.getenv("TRADING_MODE"))
+    pid_exists = os.path.exists(_BOT_PID_FILE)
+    app.logger.info(
+        f"Watchdog: TRADING_MODE={'set' if mode_set else 'NOT SET'} | "
+        f"PID file={'exists' if pid_exists else 'absent'}"
+    )
+    if (mode_set or pid_exists) and not _is_bot_running():
         try:
-            mode = os.getenv("TRADING_MODE", "").upper()
-            app.logger.info(f"Watchdog: auto-iniciando bot (TRADING_MODE={mode})...")
+            mode = os.getenv("TRADING_MODE", "paper").upper()
+            app.logger.info(f"Watchdog: auto-iniciando bot (TRADING_MODE={mode}, pid_file={pid_exists})...")
             _start_bot_process()
         except Exception as e:
             app.logger.error(f"Watchdog auto-start falhou: {e}")
@@ -353,8 +363,24 @@ def api_bot_stop():
     if not _is_bot_running():
         return jsonify({"ok": False, "message": "Bot não está rodando."})
     try:
-        _bot_process.terminate()
-        _bot_process.wait(timeout=5)
+        # Case 1: processo em memória (iniciado nesta sessão Flask)
+        if _bot_process is not None:
+            _bot_process.terminate()
+            try:
+                _bot_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _bot_process.kill()
+        else:
+            # Case 2: processo detectado via PID file (sessão anterior / container restart)
+            if os.path.exists(_BOT_PID_FILE):
+                try:
+                    pid = int(open(_BOT_PID_FILE).read().strip())
+                    os.kill(pid, 15)   # SIGTERM
+                    time.sleep(2)
+                    if _pid_alive(pid):
+                        os.kill(pid, 9)  # SIGKILL forçado
+                except Exception as ke:
+                    app.logger.warning(f"Kill via PID falhou: {ke}")
         _bot_process = None
         _bot_was_started = False  # Watchdog NÃO reinicia após stop manual
         _clear_pid()
@@ -381,10 +407,59 @@ def api_bot_run_once():
 @app.route("/api/analyses")
 @_require_auth
 def api_analyses():
-    """Retorna os últimos 20 ciclos onde não houve entrada (entry_allowed=false)."""
+    """Retorna os últimos 10 ciclos onde não houve entrada (entry_allowed=false)."""
     signals = _read_json("trades/signals_log.json") or []
     no_entry = [s for s in signals if not s.get("entry_allowed", False)]
-    return jsonify(list(reversed(no_entry[-20:])))  # últimas 20, mais recentes primeiro
+    return jsonify(list(reversed(no_entry[-10:])))  # últimas 10, mais recentes primeiro
+
+
+@app.route("/api/ohlcv")
+@_require_auth
+def api_ohlcv():
+    """Retorna últimos 200 candles 1H com indicadores para o gráfico de preço."""
+    try:
+        import pandas as pd
+        from backtest import add_indicators, DEFAULT_PARAMS
+        from config import SYMBOL, TIMEFRAME_ENTRY
+
+        safe_sym = SYMBOL.replace("/", "")
+        cache_file = os.path.join("data_cache", f"{safe_sym}_{TIMEFRAME_ENTRY}_0.5y.pkl")
+
+        if not os.path.exists(cache_file):
+            return jsonify({"candles": [], "position": None, "trades": [],
+                            "message": "Cache ainda não disponível. Aguarde o primeiro ciclo do bot."})
+
+        df = pd.read_pickle(cache_file)
+        df = add_indicators(df, DEFAULT_PARAMS)
+        df = df.dropna(subset=["ema_fast", "ema_mid", "ema_slow", "rsi"]).tail(200)
+
+        candles = []
+        for ts, row in df.iterrows():
+            ts_int = int(ts.timestamp())
+            candles.append({
+                "time":     ts_int,
+                "open":     round(float(row["open"]),  2),
+                "high":     round(float(row["high"]),  2),
+                "low":      round(float(row["low"]),   2),
+                "close":    round(float(row["close"]), 2),
+                "ema_fast": round(float(row["ema_fast"]), 2),
+                "ema_mid":  round(float(row["ema_mid"]),  2),
+                "ema_slow": round(float(row["ema_slow"]), 2),
+                "rsi":      round(float(row["rsi"]),      2),
+            })
+
+        # Posição atual
+        state = _paper_state()
+        position = state.get("position")
+
+        # Últimos 20 trades fechados para marcadores de entrada/saída
+        trades = _read_json("trades/trade_history.json") or []
+        trades = trades[-20:]
+
+        return jsonify({"candles": candles, "position": position, "trades": trades})
+    except Exception as e:
+        app.logger.error(f"OHLCV endpoint error: {e}")
+        return jsonify({"candles": [], "position": None, "trades": [], "error": str(e)})
 
 
 @app.route("/api/logs")

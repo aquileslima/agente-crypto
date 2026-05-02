@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Agente Crypto — ETH/USDT</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
@@ -399,6 +400,25 @@
         </div>
       </div>
       <div class="justification" id="sig-justification">Sem dados ainda. Clique em "Rodar agora" para analisar.</div>
+    </div>
+  </div>
+
+  <!-- Price Chart -->
+  <div class="card" style="margin-bottom:20px;">
+    <div class="card-header">
+      <div class="card-title">ETH/USDT — Candles 1H</div>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:var(--muted);">
+          <span style="display:flex;align-items:center;gap:4px;"><span style="background:#f59e0b;width:18px;height:2px;display:inline-block;border-radius:2px;"></span>EMA Rápida</span>
+          <span style="display:flex;align-items:center;gap:4px;"><span style="background:#8b5cf6;width:18px;height:2px;display:inline-block;border-radius:2px;"></span>EMA Média</span>
+          <span style="display:flex;align-items:center;gap:4px;"><span style="background:#475569;width:18px;height:2px;display:inline-block;border-radius:2px;"></span>EMA Lenta</span>
+        </div>
+        <button class="refresh-btn" onclick="loadPriceChart()" title="Atualizar">↻</button>
+      </div>
+    </div>
+    <div id="price-chart" style="position:relative;height:380px;"></div>
+    <div id="price-chart-empty" style="display:none;height:100px;align-items:center;justify-content:center;color:var(--muted);font-size:13px;">
+      Aguardando dados do primeiro ciclo do bot...
     </div>
   </div>
 
@@ -900,16 +920,173 @@ async function botRunOnce() {
   }
 }
 
+// ── Price Chart (Lightweight Charts / TradingView) ────────────────────────────
+let priceChart = null;
+let candleSeries = null;
+let emaFastSeries = null;
+let emaMidSeries  = null;
+let emaSlowSeries = null;
+let slPriceLine   = null;
+let tp1PriceLine  = null;
+let entryPriceLine = null;
+
+function _initPriceChart() {
+  const container = document.getElementById('price-chart');
+  if (priceChart) { priceChart.remove(); priceChart = null; }
+
+  priceChart = LightweightCharts.createChart(container, {
+    width:  container.offsetWidth,
+    height: 380,
+    layout: {
+      background: { type: 'solid', color: '#13131c' },
+      textColor:  '#64748b',
+      fontSize:   11,
+    },
+    grid: {
+      vertLines: { color: '#1c1c28' },
+      horzLines: { color: '#1c1c28' },
+    },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor: '#2a2a3d' },
+    timeScale: {
+      borderColor:    '#2a2a3d',
+      timeVisible:    true,
+      secondsVisible: false,
+      fixLeftEdge:    true,
+    },
+    handleScroll:  { mouseWheel: true, pressedMouseMove: true },
+    handleScale:   { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+  });
+
+  candleSeries = priceChart.addCandlestickSeries({
+    upColor:        '#10b981',
+    downColor:      '#ef4444',
+    borderUpColor:  '#10b981',
+    borderDownColor:'#ef4444',
+    wickUpColor:    '#10b981',
+    wickDownColor:  '#ef4444',
+  });
+
+  emaFastSeries = priceChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+  emaMidSeries  = priceChart.addLineSeries({ color: '#8b5cf6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+  emaSlowSeries = priceChart.addLineSeries({ color: '#475569', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+
+  // Responsive resize
+  const ro = new ResizeObserver(() => {
+    if (priceChart) priceChart.resize(container.offsetWidth, 380);
+  });
+  ro.observe(container);
+}
+
+async function loadPriceChart() {
+  try {
+    const r = await fetch('/api/ohlcv');
+    const d = await r.json();
+
+    const emptyDiv  = document.getElementById('price-chart-empty');
+    const chartDiv  = document.getElementById('price-chart');
+
+    if (!d.candles || !d.candles.length) {
+      chartDiv.style.display = 'none';
+      emptyDiv.style.display = 'flex';
+      return;
+    }
+    chartDiv.style.display = '';
+    emptyDiv.style.display = 'none';
+
+    if (!priceChart) _initPriceChart();
+
+    // ── Candles ─────────────────────────────────────────────────────────────
+    candleSeries.setData(d.candles.map(c => ({
+      time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
+    })));
+
+    // ── EMAs ─────────────────────────────────────────────────────────────────
+    emaFastSeries.setData(d.candles.map(c => ({ time: c.time, value: c.ema_fast })));
+    emaMidSeries .setData(d.candles.map(c => ({ time: c.time, value: c.ema_mid  })));
+    emaSlowSeries.setData(d.candles.map(c => ({ time: c.time, value: c.ema_slow })));
+
+    // ── Trade markers (entrada/saída) ─────────────────────────────────────────
+    const markers = [];
+    for (const t of (d.trades || [])) {
+      if (t.entry_time) {
+        const ts = Math.floor(new Date(t.entry_time).getTime() / 1000);
+        markers.push({
+          time:     ts,
+          position: t.direction === 'LONG' ? 'belowBar' : 'aboveBar',
+          color:    t.direction === 'LONG' ? '#10b981'  : '#ef4444',
+          shape:    t.direction === 'LONG' ? 'arrowUp'  : 'arrowDown',
+          text:     `${t.direction} $${Number(t.entry_price).toFixed(0)}`,
+        });
+      }
+      if (t.exit_time) {
+        const ts  = Math.floor(new Date(t.exit_time).getTime() / 1000);
+        const pnl = Number(t.pnl || 0);
+        markers.push({
+          time:     ts,
+          position: t.direction === 'LONG' ? 'aboveBar' : 'belowBar',
+          color:    pnl >= 0 ? '#10b981' : '#ef4444',
+          shape:    'circle',
+          text:     `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(1)}`,
+        });
+      }
+    }
+    markers.sort((a, b) => a.time - b.time);
+    candleSeries.setMarkers(markers);
+
+    // ── Remove price lines anteriores ─────────────────────────────────────────
+    try { if (slPriceLine)    candleSeries.removePriceLine(slPriceLine);    } catch(_) {}
+    try { if (tp1PriceLine)   candleSeries.removePriceLine(tp1PriceLine);   } catch(_) {}
+    try { if (entryPriceLine) candleSeries.removePriceLine(entryPriceLine); } catch(_) {}
+    slPriceLine = tp1PriceLine = entryPriceLine = null;
+
+    // ── Posição ativa: linhas SL / TP1 / Entrada ─────────────────────────────
+    if (d.position) {
+      const pos = d.position;
+      entryPriceLine = candleSeries.createPriceLine({
+        price:             pos.entry_price,
+        color:             '#8b5cf6',
+        lineWidth:         1,
+        lineStyle:         LightweightCharts.LineStyle.Dotted,
+        axisLabelVisible:  true,
+        title:             'Entrada',
+      });
+      slPriceLine = candleSeries.createPriceLine({
+        price:            pos.stop_price,
+        color:            '#ef4444',
+        lineWidth:        1,
+        lineStyle:        LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title:            'Stop Loss',
+      });
+      if (!pos.tp1_hit) {
+        tp1PriceLine = candleSeries.createPriceLine({
+          price:            pos.tp1_price,
+          color:            '#10b981',
+          lineWidth:        1,
+          lineStyle:        LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true,
+          title:            'TP1',
+        });
+      }
+    }
+
+    priceChart.timeScale().fitContent();
+
+  } catch(e) { console.error('Price chart error:', e); }
+}
+
 // ── Refresh all ───────────────────────────────────────────────────────────────
 async function refreshAll() {
-  await Promise.all([loadStatus(), loadSignal(), loadTrades(), loadEquity(), loadLogs(), loadAnalyses()]);
+  await Promise.all([loadStatus(), loadSignal(), loadTrades(), loadEquity(), loadLogs(), loadAnalyses(), loadPriceChart()]);
 }
 
 // ── Init & polling ────────────────────────────────────────────────────────────
 (async function init() {
   await refreshAll();
   await loadConfig();
-  setInterval(refreshAll, 30000); // Refresh every 30s
+  setInterval(refreshAll, 30000);  // Refresh every 30s
+  setInterval(loadPriceChart, 60000); // Chart refresh every 60s (less aggressive)
 })();
 </script>
 </body>
